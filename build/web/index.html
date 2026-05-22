@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="/">
+
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <meta name="description" content="HoraExtra">
+  <meta name="theme-color" content="#ffffff">
+
+  <title>HoraExtra</title>
+
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #ffffff;
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #ffffff;
+      z-index: 9999;
+      flex-direction: column;
+    }
+
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid #e0e0e0;
+      border-top: 3px solid #333333;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-top: 24px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    @keyframes fadeOut {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Splash minimalista -->
+  <div id="loading">
+
+    <!-- LOGOTIPO SVG -->
+    <svg width="220" height="70" viewBox="0 0 220 70" xmlns="http://www.w3.org/2000/svg">
+      <!-- Relógio -->
+      <circle cx="35" cy="35" r="22" stroke="#333333" stroke-width="2" fill="white"/>
+      <circle cx="35" cy="35" r="3" fill="#333333"/>
+
+      <!-- Ponteiros -->
+      <line x1="35" y1="35" x2="35" y2="20" stroke="#333333" stroke-width="2" stroke-linecap="round"/>
+      <line x1="35" y1="35" x2="48" y2="35" stroke="#333333" stroke-width="2" stroke-linecap="round"/>
+
+      <!-- Texto -->
+      <text x="75" y="45"
+            font-family="Segoe UI, Arial"
+            font-size="30"
+            font-weight="600"
+            fill="#333333">
+        Hora
+      </text>
+
+      <text x="145" y="45"
+            font-family="Segoe UI, Arial"
+            font-size="30"
+            font-weight="600"
+            fill="#777777">
+        Extra
+      </text>
+    </svg>
+
+    <div class="spinner"></div>
+
+  </div>
+
+  <script>
+    window.addEventListener('flutter-first-frame', function () {
+      const loading = document.getElementById('loading');
+      if (loading) {
+        loading.style.animation = 'fadeOut 0.4s ease-out';
+        setTimeout(() => loading.remove(), 400);
+      }
+    });
+  </script>
+
+  <script src="flutter_bootstrap.js" async></script>
+
+</body>
+</html>
