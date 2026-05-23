@@ -28,7 +28,6 @@ class RealtimeWsService {
   static const int _maxReconnectAttempts = 5;
   static const Duration _reconnectDelay = Duration(seconds: 3);
 
-  // Streams
   final _connectionStatus = StreamController<bool>.broadcast();
   final _providerLocations = StreamController<Map<String, dynamic>>.broadcast();
   final _providerOnline = StreamController<Map<String, dynamic>>.broadcast();
@@ -40,7 +39,8 @@ class RealtimeWsService {
   final _pendingRequests = StreamController<List<dynamic>>.broadcast();
 
   Stream<bool> get connectionStatus => _connectionStatus.stream;
-  Stream<Map<String, dynamic>> get providerLocations => _providerLocations.stream;
+  Stream<Map<String, dynamic>> get providerLocations =>
+      _providerLocations.stream;
   Stream<Map<String, dynamic>> get providerOnline => _providerOnline.stream;
   Stream<Map<String, dynamic>> get providerOffline => _providerOffline.stream;
   Stream<Map<String, dynamic>> get newRequest => _newRequest.stream;
@@ -50,6 +50,25 @@ class RealtimeWsService {
   Stream<List<dynamic>> get pendingRequests => _pendingRequests.stream;
 
   bool get isConnected => _registered && _channel != null;
+
+  // ── Envio interno — usa _channel diretamente, sem verificar _registered ──
+  void _sendRaw(Map<String, dynamic> data) {
+    try {
+      _channel!.sink.add(jsonEncode(data));
+    } catch (e) {
+      debugPrint('❌ WS: erro ao enviar: $e');
+      _onDisconnect();
+    }
+  }
+
+  // ── Envio público — verifica se está registado ────────────────────────────
+  void _send(Map<String, dynamic> data) {
+    if (!_registered || _channel == null) {
+      debugPrint('⚠️ WS: mensagem não enviada (desconectado): ${data['type']}');
+      return;
+    }
+    _sendRaw(data);
+  }
 
   Future<void> connect({
     required String userId,
@@ -87,7 +106,7 @@ class RealtimeWsService {
       _channel = WebSocketChannel.connect(uri);
 
       await _channel!.ready.timeout(
-        const Duration(seconds: 5),
+        const Duration(seconds: 10),
         onTimeout: () => throw TimeoutException('Timeout de conexão WS'),
       );
 
@@ -101,12 +120,11 @@ class RealtimeWsService {
         cancelOnError: false,
       );
 
-      _registered = true;
       _isConnecting = false;
-      _connectionStatus.add(true);
       debugPrint('🔌 WS: conectado como $name ($role)');
 
-      _send({
+      // Enviar register diretamente — _registered ainda é false aqui
+      _sendRaw({
         'type': 'register',
         'userId': userId,
         'name': name,
@@ -116,10 +134,11 @@ class RealtimeWsService {
         'isOnline': isOnline,
       });
 
+      // Ping periódico para manter conexão viva
       _pingTimer?.cancel();
       _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
-        if (_registered && _channel != null) {
-          _send({'type': 'ping'});
+        if (_channel != null) {
+          _sendRaw({'type': 'ping'});
         }
       });
     } catch (e) {
@@ -136,13 +155,16 @@ class RealtimeWsService {
       debugPrint('🔌 WS: máximo de tentativas de reconexão atingido');
       return;
     }
-
     _reconnectTimer?.cancel();
-    final delay = Duration(seconds: math.min(_reconnectDelay.inSeconds * (_reconnectAttempts + 1), 30));
+    final delay = Duration(
+      seconds:
+          math.min(_reconnectDelay.inSeconds * (_reconnectAttempts + 1), 30),
+    );
     _reconnectTimer = Timer(delay, () {
       if (!_registered && _userId != null) {
         _reconnectAttempts++;
-        debugPrint('🔌 WS: reconectando (${_reconnectAttempts}/$_maxReconnectAttempts)');
+        debugPrint(
+            '🔌 WS: reconectando ($_reconnectAttempts/$_maxReconnectAttempts)');
         connect(
           userId: _userId!,
           name: _name ?? '',
@@ -200,7 +222,8 @@ class RealtimeWsService {
     required String clientName,
     required Map<String, dynamic> location,
   }) {
-    debugPrint('📤 WS: pedido $requestId → ${selectedProviderIds.length} prestador(es)');
+    debugPrint(
+        '📤 WS: pedido $requestId → ${selectedProviderIds.length} prestador(es)');
     _send({
       'type': 'service_request',
       'requestId': requestId,
@@ -212,7 +235,8 @@ class RealtimeWsService {
   }
 
   void respondToRequest(String requestId, bool accepted) {
-    debugPrint('📤 WS: ${accepted ? "aceitando" : "recusando"} pedido $requestId');
+    debugPrint(
+        '📤 WS: ${accepted ? "aceitando" : "recusando"} pedido $requestId');
     _send({
       'type': 'request_response',
       'requestId': requestId,
@@ -222,24 +246,7 @@ class RealtimeWsService {
 
   void notifyServiceCompleted(String requestId) {
     debugPrint('📤 WS: serviço $requestId concluído');
-    _send({
-      'type': 'service_completed',
-      'requestId': requestId,
-    });
-  }
-
-  void _send(Map<String, dynamic> data) {
-    if (!_registered || _channel == null) {
-      debugPrint('⚠️ WS: mensagem não enviada (desconectado): ${data['type']}');
-      return;
-    }
-
-    try {
-      _channel!.sink.add(jsonEncode(data));
-    } catch (e) {
-      debugPrint('❌ WS: erro ao enviar: $e');
-      _onDisconnect();
-    }
+    _send({'type': 'service_completed', 'requestId': requestId});
   }
 
   void _onMessage(String raw) {
@@ -249,136 +256,86 @@ class RealtimeWsService {
       debugPrint('📨 WS recv: $type');
 
       switch (type) {
-        // ✅ REGISTRO
         case 'registered':
+          _registered = true;
           debugPrint('✅ WS: registo confirmado para $_userId');
           _connectionStatus.add(true);
           break;
 
-        // ✅ SNAPSHOT DE PRESTADORES
         case 'providers_snapshot':
           final providers = msg['providers'] as List<dynamic>? ?? [];
-          debugPrint('📸 WS: snapshot com ${providers.length} prestadores');
           _providerSnapshot.add(providers);
           break;
 
-        // ✅ PEDIDOS PENDENTES
         case 'pending_requests':
           final requests = msg['requests'] as List<dynamic>? ?? [];
-          debugPrint('📦 WS: ${requests.length} pedidos pendentes recebidos');
           _pendingRequests.add(requests);
           break;
 
-        // ✅ NOVO PEDIDO (do backend)
         case 'NEW_REQUEST':
           debugPrint('🆕 WS: NOVA SOLICITAÇÃO ${msg['requestId']}');
-          debugPrint('   Cliente: ${msg['clientName']}');
-          debugPrint('   Serviço: ${msg['serviceName']}');
           _newRequest.add(msg);
           break;
 
-        // ✅ RESPOSTA DO PRESTADOR (enviada pelo backend)
         case 'REQUEST_ACCEPTED':
-          debugPrint('✅ WS: PRESTADOR ACEITOU pedido ${msg['requestId']}');
-          _requestResponse.add({
-            ...msg,
-            'accepted': true,
-          });
+          _requestResponse.add({...msg, 'accepted': true});
           break;
 
         case 'REQUEST_REJECTED':
-          debugPrint('❌ WS: PRESTADOR RECUSOU pedido ${msg['requestId']}');
-          _requestResponse.add({
-            ...msg,
-            'accepted': false,
-          });
+          _requestResponse.add({...msg, 'accepted': false});
           break;
 
-        // ✅ CONFIRMAÇÕES (recebidas pelo prestador)
         case 'REQUEST_ACCEPTED_CONFIRM':
-          debugPrint('✅ WS: CONFIRMAÇÃO de aceitação do pedido ${msg['requestId']}');
-          _requestResponse.add({
-            ...msg,
-            'accepted': true,
-            'confirmed': true,
-          });
+          _requestResponse.add({...msg, 'accepted': true, 'confirmed': true});
           break;
 
         case 'REQUEST_REJECTED_CONFIRM':
-          debugPrint('❌ WS: CONFIRMAÇÃO de rejeição do pedido ${msg['requestId']}');
-          _requestResponse.add({
-            ...msg,
-            'accepted': false,
-            'confirmed': true,
-          });
+          _requestResponse.add({...msg, 'accepted': false, 'confirmed': true});
           break;
 
-        // ✅ SERVIÇO CONCLUÍDO
         case 'SERVICE_COMPLETED':
-          debugPrint('✅ WS: SERVIÇO CONCLUÍDO ${msg['requestId']}');
           _serviceCompleted.add(msg);
-          _requestResponse.add({
-            ...msg,
-            'completed': true,
-            'accepted': true,
-          });
+          _requestResponse.add({...msg, 'completed': true, 'accepted': true});
           break;
 
         case 'SERVICE_COMPLETED_ACK':
-          debugPrint('✅ WS: CONFIRMAÇÃO de serviço concluído ${msg['requestId']}');
           _serviceCompleted.add(msg);
-          _requestResponse.add({
-            ...msg,
-            'completed': true,
-          });
+          _requestResponse.add({...msg, 'completed': true});
           break;
 
-        // ✅ LOCALIZAÇÃO DO PRESTADOR
         case 'provider_location':
           final providerId = msg['providerId']?.toString();
           final lat = msg['lat'] as num?;
           final lng = msg['lng'] as num?;
           if (providerId != null && lat != null && lng != null) {
-            debugPrint('📍 WS: Prestador $providerId → ($lat, $lng)');
             _providerLocations.add(msg);
           }
           break;
 
-        // ✅ PRESTADOR ONLINE/OFFLINE
         case 'provider_online':
           final p = msg['provider'];
-          if (p is Map<String, dynamic>) {
-            debugPrint('🟢 WS: Prestador ${p['name']} ONLINE');
-            _providerOnline.add(p);
-          }
+          if (p is Map<String, dynamic>) _providerOnline.add(p);
           break;
 
         case 'provider_offline':
           final p = msg['provider'];
-          if (p is Map<String, dynamic>) {
-            debugPrint('🔴 WS: Prestador ${p['id']} OFFLINE');
-            _providerOffline.add(p);
-          }
+          if (p is Map<String, dynamic>) _providerOffline.add(p);
           break;
 
-        // ✅ PING/PONG
         case 'ping':
-          _send({'type': 'pong'});
+          _sendRaw({'type': 'pong'});
           break;
 
         case 'pong':
-          // debugPrint('🏓 WS: pong recebido');
+        case 'heartbeat_ack':
           break;
 
-        // ✅ FALLBACK para qualquer outro tipo
         default:
           debugPrint('⚠️ WS: tipo desconhecido → $type');
-          // Tenta processar como resposta se tiver accepted
           if (msg.containsKey('accepted')) {
-            debugPrint('   → Processando como resposta de pedido');
             _requestResponse.add(msg);
-          } else if (msg.containsKey('requestId') && msg.containsKey('serviceName')) {
-            debugPrint('   → Processando como novo pedido');
+          } else if (msg.containsKey('requestId') &&
+              msg.containsKey('serviceName')) {
             _newRequest.add(msg);
           }
       }
