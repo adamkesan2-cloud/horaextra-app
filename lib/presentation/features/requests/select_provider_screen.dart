@@ -1,13 +1,4 @@
 // lib/presentation/features/requests/select_provider_screen.dart
-// ─────────────────────────────────────────────────────────────────────────────
-// Melhorias:
-//   • Agendamento direto na tela de seleção
-//   • Filtro "Apenas Online"
-//   • Ordenação por menor custo + badge de destaque
-//   • Cancelar solicitação
-//   • UI sem ícones decorativos, tipografia-first
-// ─────────────────────────────────────────────────────────────────────────────
-
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:horaextra_app/data/models/location/location_model.dart';
@@ -26,19 +17,16 @@ import 'package:horaextra_app/presentation/features/profile/view/provider_profil
 class SelectProviderScreen extends StatefulWidget {
   final ServiceModel service;
   final DateTime? scheduledDate;
-  final String? observations;
   final Map<String, dynamic>? location;
-  final bool isUrgent;
   final int quantity;
 
   const SelectProviderScreen({
     super.key,
     required this.service,
     this.scheduledDate,
-    this.observations,
     this.location,
-    this.isUrgent = false,
     this.quantity = 1,
+    String? observations,
   });
 
   @override
@@ -49,14 +37,17 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
     with TickerProviderStateMixin {
   bool _isLoading = true;
   bool _isSending = false;
+
+  // Ordenação: 'match' (melhor pontuação), 'distance' (mais próximos),
+  // 'online' (online primeiro). Preço não entra aqui — o valor do serviço
+  // é único e igual para todos os prestadores.
   String _sortBy = 'match';
-  bool _onlineOnly = false;
+
   List<ProviderSelectionModel> _providers = [];
   String? _errorMessage;
   LatLng? _currentPosition;
   String _address = 'Maputo, Moçambique';
 
-  // Agendamento interno
   DateTime? _scheduledDate;
 
   late AnimationController _fadeCtrl;
@@ -79,17 +70,30 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
   }
 
   double _calculateProviderPrice(ProviderSelectionModel p) =>
-      p.price * widget.quantity * (widget.isUrgent ? 1.2 : 1);
+      p.price * widget.quantity;
 
-  double _calculateTotal() => _providers
-      .where((p) => p.isSelected)
-      .fold(0.0, (s, p) => s + _calculateProviderPrice(p));
+  List<ProviderSelectionModel> get _onlineProviders =>
+      _providers.where((p) => p.isOnline).toList();
 
-  double _calculateBudget() {
-    final selected = _providers.where((p) => p.isSelected).toList();
+  // O cliente pode selecionar quantos prestadores quiser manualmente.
+  List<ProviderSelectionModel> get _selectedProviders =>
+      _providers.where((p) => p.isSelected).toList();
+
+  // Preço médio entre os prestadores online — usado como estimativa
+  // ao enviar automaticamente ("Solicitar Agora").
+  double _calculateOnlineBudget() {
+    final online = _onlineProviders;
+    if (online.isEmpty) return 0;
+    final total = online.fold(0.0, (s, p) => s + _calculateProviderPrice(p));
+    return total / online.length;
+  }
+
+  // Preço total dividido entre os prestadores escolhidos manualmente.
+  double _calculateSelectedBudgetPerProvider() {
+    final selected = _selectedProviders;
     if (selected.isEmpty) return 0;
-    return selected.fold(0.0, (s, p) => s + _calculateProviderPrice(p)) /
-        selected.length;
+    final total = selected.fold(0.0, (s, p) => s + _calculateProviderPrice(p));
+    return total / selected.length;
   }
 
   Future<void> _loadProviders() async {
@@ -103,8 +107,7 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
       LatLng userLocation;
       String address = 'Maputo, Moçambique';
 
-      if (widget.location != null &&
-          widget.location!['latitude'] != null) {
+      if (widget.location != null && widget.location!['latitude'] != null) {
         userLocation = LatLng(
           widget.location!['latitude'] as double,
           widget.location!['longitude'] as double,
@@ -123,6 +126,7 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
         clientLatitude: userLocation.latitude,
         clientLongitude: userLocation.longitude,
         maxDistance: 20,
+        forceRefresh: true,
       );
 
       if (!mounted) return;
@@ -152,20 +156,17 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
         case 'distance':
           _providers.sort((a, b) => a.distance.compareTo(b.distance));
           break;
-        case 'price':
-          _providers.sort((a, b) => a.price.compareTo(b.price));
-          break;
-        case 'rating':
-          _providers.sort((a, b) => b.rating.compareTo(a.rating));
+        case 'online':
+          _providers.sort((a, b) {
+            if (a.isOnline == b.isOnline) {
+              return b.matchScore.compareTo(a.matchScore);
+            }
+            return a.isOnline ? -1 : 1;
+          });
           break;
       }
     });
   }
-
-  List<ProviderSelectionModel> get _filteredProviders =>
-      _onlineOnly ? _providers.where((p) => p.isOnline).toList() : _providers;
-
-  int get _selectedCount => _providers.where((p) => p.isSelected).length;
 
   void _toggleSelection(int index) {
     setState(() {
@@ -174,17 +175,6 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
     });
   }
 
-  void _toggleSelectAll() {
-    final allSelected = _selectedCount == _filteredProviders.length;
-    setState(() {
-      for (final p in _filteredProviders) {
-        final idx = _providers.indexOf(p);
-        _providers[idx] = _providers[idx].copyWith(isSelected: !allSelected);
-      }
-    });
-  }
-
-  // ── Agendamento ────────────────────────────────────────────────────────────
   Future<void> _pickSchedule() async {
     final date = await showDatePicker(
       context: context,
@@ -219,14 +209,23 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
   String _fmtDate(DateTime d) {
     final days = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
     final months = [
-      'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
-      'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'
+      'Jan',
+      'Fev',
+      'Mar',
+      'Abr',
+      'Mai',
+      'Jun',
+      'Jul',
+      'Ago',
+      'Set',
+      'Out',
+      'Nov',
+      'Dez'
     ];
     return '${days[d.weekday % 7]}, ${d.day} ${months[d.month - 1]} às '
         '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}h';
   }
 
-  // ── Cancelar ───────────────────────────────────────────────────────────────
   Future<void> _cancelRequest() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -237,8 +236,7 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                 fontSize: 17,
                 fontWeight: FontWeight.w700,
                 color: AppColors.primaryBlue)),
-        content: const Text(
-            'Tem certeza que deseja cancelar esta solicitação?',
+        content: const Text('Tem certeza que deseja cancelar esta solicitação?',
             style: TextStyle(color: AppColors.textSecondary)),
         actions: [
           TextButton(
@@ -261,13 +259,116 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
     if (confirmed == true && mounted) Navigator.pop(context);
   }
 
+  void _showSnack(String message, Color color) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content:
+          Text(message, style: const TextStyle(fontWeight: FontWeight.w600)),
+      backgroundColor: color,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
+  // mode: 'auto'   → notifica todos os prestadores online.
+  // mode: 'manual' → notifica só os prestadores marcados manualmente pelo
+  //                  cliente (ele escolhe quantos quiser).
+  Future<void> _sendRequests(String mode) async {
+    final providersToNotify =
+        mode == 'auto' ? _onlineProviders : _selectedProviders;
+
+    if (providersToNotify.isEmpty) {
+      _showSnack(
+          mode == 'auto'
+              ? 'Nenhum prestador online no momento'
+              : 'Selecione pelo menos um prestador',
+          AppColors.warning);
+      return;
+    }
+
+    setState(() => _isSending = true);
+    try {
+      final appProvider = Provider.of<AppProvider>(context, listen: false);
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+      final budget = mode == 'auto'
+          ? _calculateOnlineBudget()
+          : _calculateSelectedBudgetPerProvider();
+
+      final requestId = await appProvider.createRequest(
+        serviceId: widget.service.id,
+        clientId: authProvider.currentUser?.id ?? '',
+        clientName: authProvider.currentUser?.name ?? 'Cliente',
+        providerIds: providersToNotify.map((p) => p.id).toList(),
+        requestMode: mode == 'auto' ? 'broadcast' : 'manual',
+        categoryId: null,
+        requestedProviderCount: 1,
+        location: LocationModel(
+          latitude: _currentPosition?.latitude ?? -25.9692,
+          longitude: _currentPosition?.longitude ?? 32.5732,
+          address: _address,
+        ),
+        budget: budget,
+        scheduledDate: _scheduledDate,
+        isScheduled: _scheduledDate != null,
+      );
+
+      if (requestId != null && requestId.isNotEmpty) {
+        if (!kIsWeb) {
+          RealtimeWsService().sendServiceRequest(
+            requestId: requestId,
+            selectedProviderIds: providersToNotify.map((p) => p.id).toList(),
+            serviceName: widget.service.name,
+            clientName: authProvider.currentUser?.name ?? 'Cliente',
+            location: {
+              'latitude': _currentPosition?.latitude ?? -25.9692,
+              'longitude': _currentPosition?.longitude ?? 32.5732,
+              'address': _address,
+            },
+            isScheduled: _scheduledDate != null,
+            scheduledDate: _scheduledDate?.toIso8601String(),
+          );
+        }
+
+        _showSnack(
+            _scheduledDate != null
+                ? 'Serviço agendado com sucesso! Os prestadores serão notificados na data escolhida.'
+                : 'Solicitação enviada para ${providersToNotify.length} prestador(es)!',
+            AppColors.success);
+
+        if (mounted) {
+          if (_scheduledDate == null) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (_) => RequestTrackingScreen(
+                  serviceName: widget.service.name,
+                  selectedProviders: providersToNotify,
+                  scheduledDate: _scheduledDate,
+                  requestId: requestId,
+                  quantity: widget.quantity,
+                  wantedProviderCount: 1,
+                ),
+              ),
+            );
+          } else {
+            Navigator.pop(context, true);
+          }
+        }
+      } else {
+        throw Exception('Falha ao criar pedido');
+      }
+    } catch (e) {
+      _showSnack('Erro: $e', AppColors.error);
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final isDesktop = size.width > 1024;
-    final cheapest = _providers.isNotEmpty
-        ? _providers.reduce((a, b) => a.price < b.price ? a : b)
-        : null;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -281,20 +382,34 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                     _buildScheduleBar(),
                     _buildFilterBar(isDesktop),
                     Expanded(
-                      child: _filteredProviders.isEmpty
+                      child: _providers.isEmpty
                           ? _buildEmptyState(isDesktop)
                           : FadeTransition(
                               opacity: _fadeAnim,
-                              child: ListView.builder(
-                                padding: EdgeInsets.fromLTRB(
-                                    isDesktop ? 20 : 16,
-                                    12,
-                                    isDesktop ? 20 : 16,
-                                    isDesktop ? 20 : 16),
-                                itemCount: _filteredProviders.length,
-                                itemBuilder: (ctx, i) => _buildProviderCard(
-                                    _filteredProviders[i], cheapest, isDesktop),
-                              ),
+                              child: isDesktop
+                                  ? GridView.builder(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          20, 12, 20, 20),
+                                      gridDelegate:
+                                          const SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: 2,
+                                        childAspectRatio: 2.5,
+                                        crossAxisSpacing: 16,
+                                        mainAxisSpacing: 16,
+                                      ),
+                                      itemCount: _providers.length,
+                                      itemBuilder: (ctx, i) =>
+                                          _buildProviderCard(
+                                              _providers[i], isDesktop),
+                                    )
+                                  : ListView.builder(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          16, 12, 16, 16),
+                                      itemCount: _providers.length,
+                                      itemBuilder: (ctx, i) =>
+                                          _buildProviderCard(
+                                              _providers[i], isDesktop),
+                                    ),
                             ),
                     ),
                     _buildFooter(isDesktop),
@@ -303,13 +418,13 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
     );
   }
 
-  // ── AppBar ─────────────────────────────────────────────────────────────────
   PreferredSizeWidget _buildAppBar(bool isDesktop) {
     return AppBar(
       backgroundColor: AppColors.white,
       elevation: 0,
       leading: IconButton(
-        icon: const Icon(Icons.arrow_back_rounded, color: AppColors.primaryBlue),
+        icon:
+            const Icon(Icons.arrow_back_rounded, color: AppColors.primaryBlue),
         onPressed: () => Navigator.pop(context),
       ),
       title: Column(
@@ -321,8 +436,7 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                   fontWeight: FontWeight.w700,
                   color: AppColors.primaryBlue)),
           Text(widget.service.name,
-              style: const TextStyle(
-                  fontSize: 11, color: AppColors.blueMedium),
+              style: const TextStyle(fontSize: 11, color: AppColors.blueMedium),
               maxLines: 1,
               overflow: TextOverflow.ellipsis),
         ],
@@ -334,8 +448,6 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
       actions: [
         if (widget.quantity > 1)
           _appBarChip('${widget.quantity}x', AppColors.primaryBlue),
-        if (widget.isUrgent)
-          _appBarChip('URGENTE', AppColors.error),
         TextButton(
           onPressed: _cancelRequest,
           child: const Text('Cancelar',
@@ -345,8 +457,7 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                   fontSize: 13)),
         ),
         IconButton(
-          icon:
-              const Icon(Icons.refresh_rounded, color: AppColors.primaryBlue),
+          icon: const Icon(Icons.refresh_rounded, color: AppColors.primaryBlue),
           onPressed: _loadProviders,
         ),
       ],
@@ -368,7 +479,6 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
     );
   }
 
-  // ── Barra de agendamento ───────────────────────────────────────────────────
   Widget _buildScheduleBar() {
     return GestureDetector(
       onTap: _pickSchedule,
@@ -432,8 +542,7 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                   decoration: BoxDecoration(
                     color: AppColors.error.withOpacity(0.08),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                        color: AppColors.error.withOpacity(0.2)),
+                    border: Border.all(color: AppColors.error.withOpacity(0.2)),
                   ),
                   child: const Text('Remover',
                       style: TextStyle(
@@ -454,156 +563,129 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
     );
   }
 
-  // ── Filtros ────────────────────────────────────────────────────────────────
+  // Barra de ordenação + status, num visual mais moderno (chips em vez de
+  // dropdown) — sem categoria, sem contador de prestadores pretendidos.
   Widget _buildFilterBar(bool isDesktop) {
+    final onlineCount = _onlineProviders.length;
     return Container(
-      padding: EdgeInsets.symmetric(
-          horizontal: isDesktop ? 20 : 16, vertical: 10),
+      padding:
+          EdgeInsets.fromLTRB(isDesktop ? 20 : 16, 12, isDesktop ? 20 : 16, 10),
       decoration: const BoxDecoration(
         color: AppColors.white,
         border: Border(bottom: BorderSide(color: AppColors.border)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Ordenação
-          _filterDropdown(),
-          const SizedBox(width: 10),
-          // Online Only toggle
-          GestureDetector(
-            onTap: () => setState(() => _onlineOnly = !_onlineOnly),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: _onlineOnly
-                    ? AppColors.success.withOpacity(0.1)
-                    : AppColors.creamLight,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: _onlineOnly
-                      ? AppColors.success
-                      : AppColors.border,
+          _buildSortChips(),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: AppColors.success.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.success.withOpacity(0.4)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        color: AppColors.success,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '$onlineCount online',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.success,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 7,
-                    height: 7,
-                    decoration: BoxDecoration(
-                      color: _onlineOnly
-                          ? AppColors.success
-                          : Colors.grey.shade400,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Online',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: _onlineOnly
-                          ? AppColors.success
-                          : AppColors.textSecondary,
-                    ),
-                  ),
-                ],
+              const Spacer(),
+              Text(
+                '${_providers.length} prestador${_providers.length != 1 ? 'es' : ''}',
+                style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w500),
               ),
-            ),
+            ],
           ),
-          const SizedBox(width: 10),
-          // Selecionar todos
-          if (_filteredProviders.isNotEmpty)
-            GestureDetector(
-              onTap: _toggleSelectAll,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 6),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSortChips() {
+    const options = [
+      {'value': 'distance', 'label': 'Mais próximos'},
+      {'value': 'match', 'label': 'Melhor pontuação'},
+      {'value': 'online', 'label': 'Online primeiro'},
+    ];
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: options.map((opt) {
+          final value = opt['value']!;
+          final label = opt['label']!;
+          final selected = _sortBy == value;
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: GestureDetector(
+              onTap: () {
+                setState(() => _sortBy = value);
+                _sortProviders();
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
                 decoration: BoxDecoration(
-                  color: AppColors.creamLight,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: AppColors.border),
+                  color:
+                      selected ? AppColors.primaryBlue : AppColors.creamLight,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: selected ? AppColors.primaryBlue : AppColors.border,
+                  ),
                 ),
                 child: Text(
-                  _selectedCount == _filteredProviders.length
-                      ? 'Limpar'
-                      : 'Todos',
-                  style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.primaryBlue,
-                      fontWeight: FontWeight.w600),
+                  label,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: selected ? Colors.white : AppColors.primaryBlue,
+                  ),
                 ),
               ),
             ),
-          const Spacer(),
-          Text(
-            '${_filteredProviders.length} prestador${_filteredProviders.length != 1 ? 'es' : ''}',
-            style: const TextStyle(
-                fontSize: 12,
-                color: AppColors.textSecondary,
-                fontWeight: FontWeight.w500),
-          ),
-        ],
+          );
+        }).toList(),
       ),
     );
   }
 
-  Widget _filterDropdown() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: AppColors.creamLight,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: DropdownButton<String>(
-        value: _sortBy,
-        underline: const SizedBox(),
-        isDense: true,
-        icon: const Icon(Icons.expand_more,
-            color: AppColors.primaryBlue, size: 18),
-        style: const TextStyle(
-            fontSize: 12,
-            color: AppColors.primaryBlue,
-            fontWeight: FontWeight.w600),
-        items: const [
-          DropdownMenuItem(value: 'match', child: Text('Melhor match')),
-          DropdownMenuItem(value: 'price', child: Text('Menor preço')),
-          DropdownMenuItem(value: 'distance', child: Text('Mais próximo')),
-          DropdownMenuItem(value: 'rating', child: Text('Melhor avaliado')),
-        ],
-        onChanged: (v) {
-          if (v != null) {
-            setState(() => _sortBy = v);
-            _sortProviders();
-          }
-        },
-      ),
-    );
-  }
-
-  // ── Card de prestador ──────────────────────────────────────────────────────
-  Widget _buildProviderCard(
-      ProviderSelectionModel provider,
-      ProviderSelectionModel? cheapest,
-      bool isDesktop) {
+  Widget _buildProviderCard(ProviderSelectionModel provider, bool isDesktop) {
     final totalPrice = _calculateProviderPrice(provider);
-    final isCheapest =
-        cheapest != null && provider.id == cheapest.id && _providers.length > 1;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: AppColors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(
-          color: provider.isSelected
-              ? AppColors.primaryBlue
-              : isCheapest
-                  ? AppColors.success.withOpacity(0.4)
-                  : AppColors.border,
+          color: provider.isSelected ? AppColors.primaryBlue : AppColors.border,
           width: provider.isSelected ? 2 : 1,
         ),
         boxShadow: [
@@ -627,14 +709,13 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
             final idx = _providers.indexOf(provider);
             _toggleSelection(idx);
           },
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
           child: Padding(
             padding: EdgeInsets.all(isDesktop ? 16 : 14),
             child: Column(
               children: [
                 Row(
                   children: [
-                    // Checkbox visual
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
                       width: 22,
@@ -657,8 +738,6 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                           : null,
                     ),
                     const SizedBox(width: 12),
-
-                    // Avatar
                     Stack(
                       children: [
                         Container(
@@ -677,7 +756,6 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                                 : _avatar(provider.name, 50),
                           ),
                         ),
-                        // Online dot
                         Positioned(
                           bottom: 1,
                           right: 1,
@@ -689,16 +767,13 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                                   ? AppColors.success
                                   : Colors.grey.shade400,
                               shape: BoxShape.circle,
-                              border: Border.all(
-                                  color: Colors.white, width: 2),
+                              border: Border.all(color: Colors.white, width: 2),
                             ),
                           ),
                         ),
                       ],
                     ),
                     const SizedBox(width: 12),
-
-                    // Info
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -717,7 +792,6 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
-                              // Match score
                               Container(
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 6, vertical: 2),
@@ -738,12 +812,10 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            '★ ${provider.rating.toStringAsFixed(1)}  ·  '
                             '${provider.distance.toStringAsFixed(1)} km  ·  '
                             '${provider.completedJobs} serviços',
                             style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.textSecondary),
+                                fontSize: 12, color: AppColors.textSecondary),
                           ),
                           if (provider.specialties.isNotEmpty)
                             Padding(
@@ -751,8 +823,7 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                               child: Text(
                                 provider.specialties.take(2).join(' · '),
                                 style: const TextStyle(
-                                    fontSize: 11,
-                                    color: AppColors.blueMedium),
+                                    fontSize: 11, color: AppColors.blueMedium),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -762,12 +833,9 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 12),
                 const Divider(height: 1, color: AppColors.border),
                 const SizedBox(height: 12),
-
-                // Rodapé: preço + badges + botões
                 Row(
                   children: [
                     Column(
@@ -775,8 +843,7 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                       children: [
                         const Text('Preço estimado',
                             style: TextStyle(
-                                fontSize: 10,
-                                color: AppColors.textSecondary)),
+                                fontSize: 10, color: AppColors.textSecondary)),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.baseline,
                           textBaseline: TextBaseline.alphabetic,
@@ -798,23 +865,53 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                               ),
                           ],
                         ),
-                        // Badges
-                        Row(
-                          children: [
-                            if (isCheapest)
-                              _badge('MENOR PREÇO', AppColors.success),
-                            if (provider.isOnline) ...[
-                              if (isCheapest) const SizedBox(width: 6),
-                              _badge('ONLINE', AppColors.success),
-                            ] else
-                              _badge('OFFLINE', Colors.grey),
-                          ],
+                        Container(
+                          margin: const EdgeInsets.only(top: 4),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: provider.isOnline
+                                ? AppColors.success.withOpacity(0.15)
+                                : Colors.grey.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: provider.isOnline
+                                  ? AppColors.success
+                                  : Colors.grey,
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  color: provider.isOnline
+                                      ? AppColors.success
+                                      : Colors.grey,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                provider.isOnline ? 'ONLINE AGORA' : 'OFFLINE',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w800,
+                                  color: provider.isOnline
+                                      ? AppColors.success
+                                      : Colors.grey,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
                     const Spacer(),
-
-                    // Ver perfil
                     OutlinedButton(
                       onPressed: () => Navigator.push(
                         context,
@@ -825,8 +922,7 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                       ),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.primaryBlue,
-                        side:
-                            const BorderSide(color: AppColors.primaryBlue),
+                        side: const BorderSide(color: AppColors.primaryBlue),
                         padding: const EdgeInsets.symmetric(
                             horizontal: 14, vertical: 8),
                         shape: RoundedRectangleBorder(
@@ -835,30 +931,6 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                       child: const Text('Perfil',
                           style: TextStyle(fontWeight: FontWeight.w600)),
                     ),
-                    const SizedBox(width: 8),
-
-                    // Selecionar
-                    ElevatedButton(
-                      onPressed: () {
-                        final idx = _providers.indexOf(provider);
-                        _toggleSelection(idx);
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: provider.isSelected
-                            ? AppColors.success
-                            : AppColors.primaryBlue,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 8),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10)),
-                        elevation: 0,
-                      ),
-                      child: Text(
-                        provider.isSelected ? 'Selecionado' : 'Selecionar',
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    ),
                   ],
                 ),
               ],
@@ -866,24 +938,6 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
           ),
         ),
       ),
-    );
-  }
-
-  Widget _badge(String label, Color color) {
-    return Container(
-      margin: const EdgeInsets.only(top: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Text(label,
-          style: TextStyle(
-              fontSize: 9,
-              fontWeight: FontWeight.w800,
-              color: color,
-              letterSpacing: 0.4)),
     );
   }
 
@@ -899,61 +953,79 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
     );
   }
 
-  // ── Footer ─────────────────────────────────────────────────────────────────
   Widget _buildFooter(bool isDesktop) {
-    final total = _calculateTotal();
+    final onlineCount = _onlineProviders.length;
+    final selectedCount = _selectedProviders.length;
+    final selectedTotal =
+        _selectedProviders.fold(0.0, (s, p) => s + _calculateProviderPrice(p));
+    final selectedPerProvider = _calculateSelectedBudgetPerProvider();
+
     return Container(
-      padding: EdgeInsets.fromLTRB(
-          isDesktop ? 20 : 16,
-          12,
-          isDesktop ? 20 : 16,
-          isDesktop ? 24 : 20 + MediaQuery.of(context).padding.bottom),
+      padding: EdgeInsets.fromLTRB(isDesktop ? 20 : 16, 12, isDesktop ? 20 : 16,
+          isDesktop ? 20 : 16 + MediaQuery.of(context).padding.bottom),
       decoration: const BoxDecoration(
         color: AppColors.white,
         border: Border(top: BorderSide(color: AppColors.border)),
       ),
       child: SafeArea(
         top: false,
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '$_selectedCount selecionado${_selectedCount != 1 ? 's' : ''}',
-                    style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.primaryBlue),
-                  ),
-                  if (_selectedCount > 0)
-                    Text(
-                      'Total: MT ${total.toStringAsFixed(0)}',
-                      style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textSecondary),
+            if (selectedCount > 0)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '$selectedCount selecionado${selectedCount != 1 ? 's' : ''} · '
+                        'MT ${selectedPerProvider.toStringAsFixed(0)} cada '
+                        '(total MT ${selectedTotal.toStringAsFixed(0)} dividido)',
+                        style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textSecondary,
+                            fontWeight: FontWeight.w500),
+                      ),
                     ),
-                  if (_scheduledDate != null)
-                    Text(
-                      _fmtDate(_scheduledDate!),
-                      style: const TextStyle(
-                          fontSize: 11, color: AppColors.info),
-                    ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(width: 16),
-            _selectedCount > 0
-                ? ElevatedButton(
-                    onPressed: _isSending ? null : _sendRequests,
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _isSending || selectedCount == 0
+                        ? null
+                        : () => _sendRequests('manual'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.primaryBlue,
+                      side: const BorderSide(color: AppColors.primaryBlue),
+                      minimumSize: const Size(0, 48),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14)),
+                    ),
+                    child: Text(
+                      selectedCount > 0
+                          ? 'Escolher Prestador ($selectedCount)'
+                          : 'Escolher Prestador',
+                      style: const TextStyle(
+                          fontWeight: FontWeight.w700, fontSize: 13),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _isSending || onlineCount == 0
+                        ? null
+                        : () => _sendRequests('auto'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primaryBlue,
                       foregroundColor: Colors.white,
-                      minimumSize: const Size(160, 48),
+                      minimumSize: const Size(0, 48),
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                          borderRadius: BorderRadius.circular(14)),
                       elevation: 0,
                     ),
                     child: _isSending
@@ -965,99 +1037,18 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
                         : Text(
                             _scheduledDate != null
                                 ? 'Agendar'
-                                : 'Enviar Solicitações',
+                                : 'Solicitar Agora ($onlineCount)',
                             style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                fontSize: 14)),
-                  )
-                : OutlinedButton(
-                    onPressed: _cancelRequest,
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.error,
-                      side: const BorderSide(color: AppColors.error),
-                      minimumSize: const Size(100, 48),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: const Text('Cancelar',
-                        style: TextStyle(fontWeight: FontWeight.w600)),
+                                fontWeight: FontWeight.w700, fontSize: 13),
+                          ),
                   ),
+                ),
+              ],
+            ),
           ],
         ),
       ),
     );
-  }
-
-  // ── Enviar ─────────────────────────────────────────────────────────────────
-  Future<void> _sendRequests() async {
-    final selected = _providers.where((p) => p.isSelected).toList();
-    if (selected.isEmpty) return;
-    setState(() => _isSending = true);
-    try {
-      final appProvider = Provider.of<AppProvider>(context, listen: false);
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      final budget = _calculateBudget();
-
-      final requestId = await appProvider.createRequest(
-        serviceId: widget.service.id,
-        clientId: authProvider.currentUser?.id ?? '',
-        clientName: authProvider.currentUser?.name ?? 'Cliente',
-        providerIds: selected.map((p) => p.id).toList(),
-        location: LocationModel(
-          latitude: _currentPosition?.latitude ?? -25.9692,
-          longitude: _currentPosition?.longitude ?? 32.5732,
-          address: _address,
-        ),
-        budget: budget,
-        scheduledDate: _scheduledDate,
-        observations: widget.observations,
-      );
-
-      if (requestId != null && requestId.isNotEmpty) {
-        if (!kIsWeb) {
-          RealtimeWsService().sendServiceRequest(
-            requestId: requestId,
-            selectedProviderIds: selected.map((p) => p.id).toList(),
-            serviceName: widget.service.name,
-            clientName: authProvider.currentUser?.name ?? 'Cliente',
-            location: {
-              'latitude': _currentPosition?.latitude ?? -25.9692,
-              'longitude': _currentPosition?.longitude ?? 32.5732,
-              'address': _address,
-            },
-          );
-        }
-        if (mounted) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => RequestTrackingScreen(
-                serviceName: widget.service.name,
-                selectedProviders: selected,
-                isUrgent: widget.isUrgent,
-                scheduledDate: _scheduledDate,
-                requestId: requestId,
-                quantity: widget.quantity,
-              ),
-            ),
-          );
-        }
-      } else {
-        throw Exception('Falha ao criar pedido');
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Erro: $e'),
-          backgroundColor: AppColors.error,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12)),
-        ));
-      }
-    } finally {
-      if (mounted) setState(() => _isSending = false);
-    }
   }
 
   Widget _buildLoading() {
@@ -1107,25 +1098,14 @@ class _SelectProviderScreenState extends State<SelectProviderScreen>
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(
-              _onlineOnly
-                  ? 'Nenhum prestador online\nneste momento'
-                  : 'Nenhum prestador encontrado\nna sua área',
+            const Text(
+              'Nenhum prestador encontrado\nna sua área',
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.w600,
                   color: AppColors.primaryBlue),
             ),
-            const SizedBox(height: 12),
-            if (_onlineOnly)
-              GestureDetector(
-                onTap: () => setState(() => _onlineOnly = false),
-                child: const Text('Mostrar todos os prestadores →',
-                    style: TextStyle(
-                        color: AppColors.primaryBlue,
-                        fontWeight: FontWeight.w600)),
-              ),
             const SizedBox(height: 24),
             ElevatedButton(
               onPressed: _loadProviders,

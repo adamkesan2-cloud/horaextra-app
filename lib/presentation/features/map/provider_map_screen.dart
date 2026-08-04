@@ -8,6 +8,7 @@ import 'package:horaextra_app/core/constants/app_colors.dart';
 import 'package:horaextra_app/core/providers/app_provider.dart';
 import 'package:horaextra_app/core/providers/auth_provider.dart';
 import 'package:horaextra_app/core/services/realtime_ws_service.dart';
+import 'package:horaextra_app/core/services/location_tracking_service.dart'; // ✅ NOVO
 import 'package:horaextra_app/data/models/service/location_service.dart'
     hide LatLngBounds;
 import 'package:latlong2/latlong.dart';
@@ -114,9 +115,12 @@ class _ProviderMapScreenState extends State<ProviderMapScreen>
   @override
   void dispose() {
     for (final s in _subs) s.cancel();
-    _locationTimer?.cancel();
+    _locationTimer?.cancel();      // apenas o timer de UI do mapa
     _routeRefreshTimer?.cancel();
     _pulseCtrl.dispose();
+    // ❌ NÃO parar o LocationTrackingService aqui — ele deve continuar a
+    // correr mesmo depois de sair deste ecrã (só para no toggle offline
+    // ou no logout).
     super.dispose();
   }
 
@@ -133,10 +137,13 @@ class _ProviderMapScreenState extends State<ProviderMapScreen>
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final ws = RealtimeWsService();
 
+    // ✅ CORRIGIDO — passa o token
+    final token = await auth.getToken() ?? '';
     await ws.connect(
       userId: auth.currentUser?.id ?? 'provider-anon',
       name: auth.currentUser?.name ?? 'Prestador',
       role: 'provider',
+      token: token,
       lat: _myPos.latitude,
       lng: _myPos.longitude,
       isOnline: _isOnline,
@@ -179,12 +186,19 @@ class _ProviderMapScreenState extends State<ProviderMapScreen>
   }
 
   void _startGpsTracking() {
+    // ✅ NOVO — envio de localização via WS passa a ser responsabilidade
+    // do serviço global, que continua a correr mesmo fora deste ecrã.
+    // Se já estiver a correr (ex: iniciado no login/toggle), não duplica.
+    LocationTrackingService().start();
+
+    // Este timer local SÓ trata da UI do mapa (posição do marcador,
+    // recalcular rota do serviço ativo, mover câmara) — já não envia
+    // nada via WS diretamente, para não duplicar com o serviço global.
     _locationTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
       if (!_isOnline || !mounted) return;
       final pos = await LocationService.getCurrentPosition();
       if (!mounted) return;
       setState(() => _myPos = LatLng(pos.latitude, pos.longitude));
-      RealtimeWsService().sendLocation(pos.latitude, pos.longitude);
       if (_activeService != null) {
         await _fetchRoute(
             LatLng(_activeService!.clientLat, _activeService!.clientLng));
@@ -583,6 +597,14 @@ class _ProviderMapScreenState extends State<ProviderMapScreen>
     final next = !_isOnline;
     setState(() => _isOnline = next);
     RealtimeWsService().setOnlineStatus(next);
+
+    // ✅ NOVO — controla o serviço global de localização junto do estado online
+    if (next) {
+      LocationTrackingService().start();
+    } else {
+      LocationTrackingService().stop();
+    }
+
     _showSnackbar(next ? 'Você está online' : 'Você está offline',
         next ? _activeGreen : Colors.grey.shade700,
         duration: 2);

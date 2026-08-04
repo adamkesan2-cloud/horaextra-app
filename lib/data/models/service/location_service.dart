@@ -1,12 +1,35 @@
-// lib/data/models/service/location_service.dart
+// lib/data/services/location_service.dart
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:latlong2/latlong.dart';
+import 'dart:math' as math;
+
+class LocationData {
+  final LatLng position;
+  final String address;
+  final String neighborhood;
+
+  const LocationData({
+    required this.position,
+    required this.address,
+    this.neighborhood = '',
+  });
+}
 
 class LocationService {
   static const LatLng maputoCenter = LatLng(-25.9692, 32.5732);
+
+  // Singleton
+  static final LocationService _instance = LocationService._internal();
+  factory LocationService() => _instance;
+  LocationService._internal();
+
+  // Cache
+  LatLng? _cachedPosition;
+  DateTime? _cachedTime;
+  static const Duration _cacheDuration = Duration(seconds: 5);
 
   // Mapa de bairros de Maputo com coordenadas aproximadas
   static final Map<String, List<LatLngBounds>> _neighborhoodBounds = {
@@ -96,7 +119,50 @@ class LocationService {
     ],
   };
 
-  static Future<Position> getCurrentPosition() async {
+  // Verificar se serviços de localização estão disponíveis
+  static Future<bool> isLocationServiceEnabled() async {
+    return await Geolocator.isLocationServiceEnabled();
+  }
+
+  // Solicitar permissões
+  static Future<bool> requestPermissions() async {
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      return permission == LocationPermission.always ||
+          permission == LocationPermission.whileInUse;
+    } catch (e) {
+      debugPrint('❌ Erro ao solicitar permissões: $e');
+      return false;
+    }
+  }
+
+  // Obter posição atual com cache
+  static Future<Position> getCurrentPosition(
+      {bool forceRefresh = false}) async {
+    // Usar cache se disponível e não forçar refresh
+    if (!forceRefresh &&
+        _instance._cachedPosition != null &&
+        _instance._cachedTime != null) {
+      final age = DateTime.now().difference(_instance._cachedTime!);
+      if (age < _cacheDuration) {
+        return Position(
+          latitude: _instance._cachedPosition!.latitude,
+          longitude: _instance._cachedPosition!.longitude,
+          timestamp: DateTime.now(),
+          accuracy: 50,
+          altitude: 0,
+          heading: 0,
+          speed: 0,
+          speedAccuracy: 0,
+          altitudeAccuracy: 50,
+          headingAccuracy: 0,
+        );
+      }
+    }
+
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
@@ -118,10 +184,16 @@ class LocationService {
         return _getDefaultPosition();
       }
 
-      return await Geolocator.getCurrentPosition(
+      final position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 8),
+        timeLimit: const Duration(seconds: 10),
       );
+
+      // Atualizar cache
+      _instance._cachedPosition = LatLng(position.latitude, position.longitude);
+      _instance._cachedTime = DateTime.now();
+
+      return position;
     } catch (e) {
       debugPrint('❌ Erro ao obter localização: $e');
       return _getDefaultPosition();
@@ -130,7 +202,7 @@ class LocationService {
 
   static Position _getDefaultPosition() {
     return Position(
-      latitude: -25.9585, // Ajustado para Primeira Rotunda Intaka
+      latitude: -25.9585,
       longitude: 32.5950,
       timestamp: DateTime.now(),
       accuracy: 100,
@@ -143,12 +215,27 @@ class LocationService {
     );
   }
 
-  static Future<({LatLng position, String address})>
-      getCurrentLocationWithAddress() async {
-    final position = await getCurrentPosition();
-    final latLng = LatLng(position.latitude, position.longitude);
-    final address = await getAddressFromLatLng(latLng);
-    return (position: latLng, address: address);
+  // Obter localização com endereço (corrigido - sem null check)
+  static Future<LocationData> getCurrentLocationWithAddress() async {
+    try {
+      final position = await getCurrentPosition();
+      final latLng = LatLng(position.latitude, position.longitude);
+      final address = await getAddressFromLatLng(latLng);
+      final neighborhood = await getNeighborhood(latLng);
+
+      return LocationData(
+        position: latLng,
+        address: address.isNotEmpty ? address : 'Maputo, Moçambique',
+        neighborhood: neighborhood,
+      );
+    } catch (e) {
+      debugPrint('❌ Erro geocoding: $e');
+      return const LocationData(
+        position: maputoCenter,
+        address: 'Maputo, Moçambique',
+        neighborhood: 'Maputo',
+      );
+    }
   }
 
   static Future<String> getAddressFromLatLng(LatLng latLng) async {
@@ -174,7 +261,7 @@ class LocationService {
       }
       return 'Maputo, Moçambique';
     } catch (e) {
-      debugPrint('❌ Erro geocoding: $e');
+      debugPrint('❌ Erro geocoding address: $e');
       return 'Maputo, Moçambique';
     }
   }
@@ -225,7 +312,6 @@ class LocationService {
   }
 
   static String _getNeighborhoodFallback(double lat, double lng) {
-    // Coordenadas específicas para Primeira Rotunda Intaka
     if (lat > -25.962 && lat < -25.952 && lng > 32.588 && lng < 32.600) {
       return 'Primeira Rotunda';
     }
@@ -274,7 +360,29 @@ class LocationService {
       parts.add(place.name!);
     return parts.isNotEmpty ? parts.join(', ') : 'Maputo, Moçambique';
   }
+
+  // Calcular distância entre dois pontos (km)
+  static double calculateDistance(LatLng from, LatLng to) {
+    const double earthRadius = 6371.0;
+    final double dLat = _toRadians(to.latitude - from.latitude);
+    final double dLng = _toRadians(to.longitude - from.longitude);
+
+    final double a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_toRadians(from.latitude)) *
+            math.cos(_toRadians(to.latitude)) *
+            math.sin(dLng / 2) *
+            math.sin(dLng / 2);
+
+    final double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return earthRadius * c;
+  }
+
+  static double _toRadians(double degrees) {
+    return degrees * math.pi / 180;
+  }
 }
+
+// Import necessário
 
 // Classe auxiliar para bounds
 class LatLngBounds {

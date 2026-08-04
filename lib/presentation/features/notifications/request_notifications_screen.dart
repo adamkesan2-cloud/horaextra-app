@@ -25,8 +25,8 @@ class RequestNotificationsScreen extends StatefulWidget {
       _RequestNotificationsScreenState();
 }
 
-class _RequestNotificationsScreenState
-    extends State<RequestNotificationsScreen>
+
+class _RequestNotificationsScreenState extends State<RequestNotificationsScreen>
     with TickerProviderStateMixin {
   bool _loading = false;
   Timer? _pollTimer;
@@ -94,13 +94,16 @@ class _RequestNotificationsScreenState
   }
 
   Future<void> _connectWebSocket() async {
+    if (!mounted) return;
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final user = authProvider.currentUser;
+    final token = await authProvider.getToken() ?? '';
     if (user != null && user.role == 'client') {
       await RealtimeWsService().connect(
         userId: user.id,
         name: user.name,
         role: 'client',
+        token: token,
         lat: -25.9692,
         lng: 32.5732,
         isOnline: true,
@@ -124,8 +127,8 @@ class _RequestNotificationsScreenState
   void _showSnack(String message, Color color) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(message,
-          style: const TextStyle(fontWeight: FontWeight.w600)),
+      content:
+          Text(message, style: const TextStyle(fontWeight: FontWeight.w600)),
       backgroundColor: color,
       duration: const Duration(seconds: 5),
       behavior: SnackBarBehavior.floating,
@@ -144,8 +147,7 @@ class _RequestNotificationsScreenState
                 fontWeight: FontWeight.w700,
                 color: AppColors.primaryBlue,
                 fontSize: 16)),
-        content: const Text(
-            'Tem certeza que deseja cancelar esta solicitação?',
+        content: const Text('Tem certeza que deseja cancelar esta solicitação?',
             style: TextStyle(color: AppColors.textSecondary)),
         actions: [
           TextButton(
@@ -191,8 +193,7 @@ class _RequestNotificationsScreenState
                 fontWeight: FontWeight.w700,
                 color: AppColors.primaryBlue,
                 fontSize: 16)),
-        content: const Text(
-            'Confirme que o serviço foi concluído com sucesso.',
+        content: const Text('Confirme que o serviço foi concluído com sucesso.',
             style: TextStyle(color: AppColors.textSecondary)),
         actions: [
           TextButton(
@@ -217,8 +218,7 @@ class _RequestNotificationsScreenState
       final ap = Provider.of<AppProvider>(context, listen: false);
       await ap.completeService(requestId);
       _showSnack(
-          'Serviço concluído! Obrigado por usar HoraExtra.',
-          AppColors.success);
+          'Serviço concluído! Obrigado por usar HoraExtra.', AppColors.success);
       await _refresh(silent: false);
       _tabController.animateTo(2); // Move para Histórico
     } catch (e) {
@@ -241,12 +241,10 @@ class _RequestNotificationsScreenState
                 r.status == 'pending' || r.status == 'providers_selected')
             .toList();
         final active = all
-            .where((r) =>
-                r.status == 'accepted' || r.status == 'in_progress')
+            .where((r) => r.status == 'accepted' || r.status == 'in_progress')
             .toList();
         final history = all
-            .where((r) =>
-                r.status == 'completed' || r.status == 'cancelled')
+            .where((r) => r.status == 'completed' || r.status == 'cancelled')
             .toList();
 
         return Scaffold(
@@ -265,8 +263,7 @@ class _RequestNotificationsScreenState
                   indicatorWeight: 2.5,
                   labelStyle: const TextStyle(
                       fontSize: 13, fontWeight: FontWeight.w700),
-                  unselectedLabelStyle:
-                      const TextStyle(fontSize: 13),
+                  unselectedLabelStyle: const TextStyle(fontSize: 13),
                   tabs: [
                     Tab(text: 'Pendentes (${pending.length})'),
                     Tab(text: 'Ativos (${active.length})'),
@@ -339,18 +336,14 @@ class _RequestNotificationsScreenState
                   width: 6,
                   height: 6,
                   decoration: BoxDecoration(
-                      color: _wsConnected
-                          ? AppColors.success
-                          : AppColors.error,
+                      color: _wsConnected ? AppColors.success : AppColors.error,
                       shape: BoxShape.circle)),
               const SizedBox(width: 5),
               Text(
                 _wsConnected ? 'Online' : 'Polling',
                 style: TextStyle(
                     fontSize: 10,
-                    color: _wsConnected
-                        ? AppColors.success
-                        : AppColors.error,
+                    color: _wsConnected ? AppColors.success : AppColors.error,
                     fontWeight: FontWeight.w600),
               ),
             ]),
@@ -425,8 +418,7 @@ class _RequestNotificationsScreenState
     );
   }
 
-  Widget _buildHistoryList(
-      List<ServiceRequestModel> history, bool isDesktop) {
+  Widget _buildHistoryList(List<ServiceRequestModel> history, bool isDesktop) {
     if (history.isEmpty) {
       return Center(
         child: Column(
@@ -441,8 +433,7 @@ class _RequestNotificationsScreenState
             const Text(
                 'Quando um serviço for concluído ou cancelado\naparece aqui.',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                    fontSize: 13, color: AppColors.textSecondary)),
+                style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
           ],
         ),
       );
@@ -471,8 +462,7 @@ class _RequestNotificationsScreenState
       decoration: BoxDecoration(
         color: AppColors.white,
         borderRadius: BorderRadius.circular(16),
-        border:
-            Border.all(color: statusColor.withOpacity(0.35), width: 1.5),
+        border: Border.all(color: statusColor.withOpacity(0.35), width: 1.5),
         boxShadow: [
           BoxShadow(
               color: AppColors.shadow,
@@ -501,19 +491,17 @@ class _RequestNotificationsScreenState
                       const SizedBox(height: 2),
                       Text(_formatDate(r.createdAt),
                           style: const TextStyle(
-                              fontSize: 11,
-                              color: AppColors.textSecondary)),
+                              fontSize: 11, color: AppColors.textSecondary)),
                     ],
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: statusColor.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                        color: statusColor.withOpacity(0.3)),
+                    border: Border.all(color: statusColor.withOpacity(0.3)),
                   ),
                   child: Text(_statusLabel(r.status),
                       style: TextStyle(
@@ -532,8 +520,7 @@ class _RequestNotificationsScreenState
               Expanded(
                 child: Text(address,
                     style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSecondary),
+                        fontSize: 12, color: AppColors.textSecondary),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis),
               ),
@@ -548,13 +535,12 @@ class _RequestNotificationsScreenState
             if (r.scheduledDate != null) ...[
               const SizedBox(height: 6),
               Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: AppColors.info.withOpacity(0.08),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                      color: AppColors.info.withOpacity(0.2)),
+                  border: Border.all(color: AppColors.info.withOpacity(0.2)),
                 ),
                 child: Text(
                   'Agendado: ${_formatDateFull(r.scheduledDate!)}',
@@ -592,8 +578,7 @@ class _RequestNotificationsScreenState
                     side: const BorderSide(color: AppColors.error),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
-                    padding:
-                        const EdgeInsets.symmetric(vertical: 12),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                   child: const Text('Cancelar solicitação',
                       style: TextStyle(fontWeight: FontWeight.w600)),
@@ -606,21 +591,16 @@ class _RequestNotificationsScreenState
                   Expanded(
                     child: OutlinedButton(
                       onPressed: () => _showProviderContact(
-                          providerName.isNotEmpty
-                              ? providerName
-                              : 'Prestador'),
+                          providerName.isNotEmpty ? providerName : 'Prestador'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.primaryBlue,
-                        side: const BorderSide(
-                            color: AppColors.primaryBlue),
+                        side: const BorderSide(color: AppColors.primaryBlue),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12)),
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 12),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
                       child: const Text('Contactar',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w600)),
+                          style: TextStyle(fontWeight: FontWeight.w600)),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -633,13 +613,11 @@ class _RequestNotificationsScreenState
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12)),
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 12),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
                         elevation: 0,
                       ),
                       child: const Text('Concluir Serviço',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w700)),
+                          style: TextStyle(fontWeight: FontWeight.w700)),
                     ),
                   ),
                 ],
@@ -680,19 +658,17 @@ class _RequestNotificationsScreenState
                               color: AppColors.primaryBlue)),
                       Text(_formatDate(r.createdAt),
                           style: const TextStyle(
-                              fontSize: 11,
-                              color: AppColors.textSecondary)),
+                              fontSize: 11, color: AppColors.textSecondary)),
                     ],
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     color: statusColor.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                        color: statusColor.withOpacity(0.3)),
+                    border: Border.all(color: statusColor.withOpacity(0.3)),
                   ),
                   child: Text(_statusLabel(r.status),
                       style: TextStyle(
@@ -715,23 +691,20 @@ class _RequestNotificationsScreenState
                 const SizedBox(width: 12),
                 Text(r.providerName!,
                     style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSecondary)),
+                        fontSize: 12, color: AppColors.textSecondary)),
               ],
             ]),
             if (r.scheduledDate != null) ...[
               const SizedBox(height: 4),
               Text(
                 'Agendado: ${_formatDateFull(r.scheduledDate!)}',
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.info),
+                style: const TextStyle(fontSize: 12, color: AppColors.info),
               ),
             ],
             const SizedBox(height: 8),
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(
-                  vertical: 7, horizontal: 10),
+              padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 10),
               decoration: BoxDecoration(
                 color: statusColor.withOpacity(0.07),
                 borderRadius: BorderRadius.circular(8),
@@ -752,8 +725,8 @@ class _RequestNotificationsScreenState
     );
   }
 
-  Widget _buildStatusBox(String status, String providerName,
-      Color statusColor) {
+  Widget _buildStatusBox(
+      String status, String providerName, Color statusColor) {
     String message;
     if (status == 'providers_selected' || status == 'pending') {
       return Row(children: [
@@ -791,9 +764,7 @@ class _RequestNotificationsScreenState
       ),
       child: Text(message,
           style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: statusColor)),
+              fontSize: 12, fontWeight: FontWeight.w600, color: statusColor)),
     );
   }
 
@@ -836,8 +807,7 @@ class _RequestNotificationsScreenState
                   onPressed: () => Navigator.pop(ctx),
                   style: OutlinedButton.styleFrom(
                       foregroundColor: AppColors.primaryBlue,
-                      side: const BorderSide(
-                          color: AppColors.primaryBlue)),
+                      side: const BorderSide(color: AppColors.primaryBlue)),
                   child: const Text('Fechar'),
                 ),
               ),

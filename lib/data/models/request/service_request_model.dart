@@ -75,6 +75,14 @@ class ServiceRequestModel {
     );
   }
 
+  get pricePerProvider => null;
+
+  get providerCount => null;
+
+  get isPriceDivided => null;
+
+  get acceptedProviders => null;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'service_id': serviceId,

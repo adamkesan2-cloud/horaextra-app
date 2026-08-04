@@ -30,10 +30,10 @@ class AuthProvider extends ChangeNotifier {
   bool get isAdmin => _currentUser?.role == 'admin';
   bool get isProvider => _currentUser?.role == 'provider';
   bool get isClient => _currentUser?.role == 'client';
-  
+
   /// ✅ Versão do avatar - incrementa quando a foto é atualizada
   int get avatarVersion => _avatarVersion;
-  
+
   /// ✅ Força atualização do avatar
   void refreshAvatar() {
     _avatarVersion++;
@@ -111,15 +111,15 @@ class AuthProvider extends ChangeNotifier {
 
   Future<void> _connectWebSocket() async {
     if (_currentUser == null) return;
-
+    final token = await _tokenService.getToken();
+    if (token == null) return;
     final role = _currentUser!.role == 'provider' ? 'provider' : 'client';
-    debugPrint(
-        '🔌 Conectando WebSocket para ${_currentUser!.name} (${_currentUser!.id}) como $role');
-
+    debugPrint('🔌 Conectando WebSocket para ${_currentUser!.name} como $role');
     await RealtimeWsService().connect(
       userId: _currentUser!.id,
       name: _currentUser!.name,
       role: role,
+      token: token,
       lat: -25.9692,
       lng: 32.5732,
       isOnline: true,
@@ -254,21 +254,23 @@ class AuthProvider extends ChangeNotifier {
   void updateCurrentUser(UserModel updatedUser) {
     final photoChanged = _currentUser?.photoUrl != updatedUser.photoUrl;
     _currentUser = updatedUser;
-    
+
     if (photoChanged) {
       _avatarVersion++; // ✅ Incrementa versão do avatar
       debugPrint('📸 Foto atualizada, avatar version: $_avatarVersion');
     }
-    
+
     notifyListeners();
   }
 
   /// ✅ Método para recarregar os dados do usuário do backend
   Future<void> reloadUser() async {
     try {
-      final response = await _apiService.getAuth('/users/me', forceRefresh: true);
+      final response =
+          await _apiService.getAuth('/users/me', forceRefresh: true);
       if (response['success'] == true) {
-        final updatedUser = UserModel.fromJson(response['data'] ?? response['user']);
+        final updatedUser =
+            UserModel.fromJson(response['data'] ?? response['user']);
         updateCurrentUser(updatedUser);
         debugPrint('✅ Usuário recarregado: ${updatedUser.name}');
       }

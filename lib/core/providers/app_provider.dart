@@ -30,8 +30,8 @@ class AppProvider extends ChangeNotifier {
 
   // Dados cacheados
   final Map<String, _CachedData<dynamic>> _localCache = {};
-  
-  // ✅ Controle de última busca para cache mais eficiente
+
+  // Controle de última busca para cache mais eficiente
   DateTime _lastPendingFetch = DateTime(2000);
   static const _cacheDuration = Duration(seconds: 3);
 
@@ -73,7 +73,13 @@ class AppProvider extends ChangeNotifier {
     _setupWebSocketListeners();
   }
 
+  // ✅ CENTRAL — único ponto que reage aos eventos WS de pedidos.
+  // Qualquer ecrã (mapa, notificações, home) partilha este AppProvider,
+  // por isso atualizar o estado aqui basta para todos os ecrãs
+  // reagirem via Consumer/notifyListeners, independentemente de qual
+  // estiver visível no momento em que o evento chega.
   void _setupWebSocketListeners() {
+    // Snapshot inicial (enviado pelo servidor assim que o WS autentica)
     RealtimeWsService().pendingRequests.listen((requests) {
       if (requests.isNotEmpty) {
         _pendingRequests = requests
@@ -85,12 +91,75 @@ class AppProvider extends ChangeNotifier {
       }
     });
 
+    // ✅ NOVO — pedido novo chega em tempo real: insere IMEDIATAMENTE no
+    // estado partilhado, sem esperar por um round-trip à API. Isto evita
+    // a corrida entre vários ecrãs a chamarem getProviderPendingRequests()
+    // ao mesmo tempo, e garante que o ecrã de notificações atualiza mesmo
+    // que não esteja a "ouvir" o WS diretamente.
+    RealtimeWsService().newRequest.listen((data) {
+      try {
+        final id = data['requestId']?.toString() ?? data['id']?.toString();
+        if (id == null || id.isEmpty) return;
+
+        // Evita duplicados se a API e o WS trouxerem o mesmo pedido
+        if (_pendingRequests.any((r) => r.id == id)) return;
+
+        final normalized = _normalizeWsNewRequest(data, id);
+        final newRequest = ServiceRequestModel.fromJson(normalized);
+
+        _pendingRequests = [newRequest, ..._pendingRequests];
+        _providerStats['pendingRequests'] = _pendingRequests.length;
+        _invalidateCache('provider_pending_${_currentUser?.id}');
+        notifyListeners();
+
+        debugPrint(
+            '📦 Pedido $id inserido imediatamente via WS (${_pendingRequests.length} pendentes)');
+      } catch (e) {
+        debugPrint('❌ Erro ao inserir pedido via WS: $e');
+      }
+
+      // Sincronização de confirmação em segundo plano (não bloqueia a UI,
+      // apenas garante consistência total com o servidor).
+      unawaited(getProviderPendingRequests(forceRefresh: true));
+    });
+
     RealtimeWsService().serviceCompleted.listen((data) {
       final requestId = data['requestId']?.toString();
       if (requestId != null) {
         _updateRequestStatus(requestId, 'completed');
       }
     });
+  }
+
+  // Converte o payload do evento WS NEW_REQUEST (chaves camelCase,
+  // estrutura plana) para o formato que ServiceRequestModel.fromJson
+  // espera (chaves snake_case, tal como a API REST devolve).
+  Map<String, dynamic> _normalizeWsNewRequest(
+      Map<String, dynamic> data, String id) {
+    final location = data['location'] is Map
+        ? Map<String, dynamic>.from(data['location'] as Map)
+        : <String, dynamic>{};
+
+    return {
+      'id': id,
+      'service_id': data['serviceId'] ?? '',
+      'service_name': data['serviceName'] ?? 'Serviço',
+      'client_id': data['clientId'] ?? '',
+      'client_name': data['clientName'] ?? 'Cliente',
+      'client_address': location['address'] ?? 'Maputo, Moçambique',
+      'client_latitude': location['latitude'] ?? -25.9692,
+      'client_longitude': location['longitude'] ?? 32.5732,
+      'price': data['budget'] ?? 0,
+      'status': 'pending',
+      'is_urgent': data['isUrgent'] ?? false,
+      'created_at': data['timestamp'] ?? DateTime.now().toIso8601String(),
+      'observations': data['observations'],
+      'metadata': {
+        'client_name': data['clientName'],
+        'service_name': data['serviceName'],
+        'is_urgent': data['isUrgent'] ?? false,
+      },
+    };
   }
 
   void _updateRequestStatus(String requestId, String newStatus) {
@@ -489,11 +558,13 @@ class AppProvider extends ChangeNotifier {
     required double clientLatitude,
     required double clientLongitude,
     double maxDistance = 20,
+    bool forceRefresh = false,
   }) async {
     final providers = await getProvidersNearby(
       latitude: clientLatitude,
       longitude: clientLongitude,
       radiusKm: maxDistance,
+      forceRefresh: forceRefresh,
     );
     return providers
         .map((p) => ProviderSelectionModel(
@@ -565,17 +636,19 @@ class AppProvider extends ChangeNotifier {
   }) async {
     final cacheKey = 'provider_pending_${_currentUser?.id}';
 
-    // ✅ Cache controlado por tempo (3 segundos)
+    // Cache controlado por tempo (3 segundos)
     if (!forceRefresh) {
       final now = DateTime.now();
       if (now.difference(_lastPendingFetch) < _cacheDuration) {
-        debugPrint('⚡ Cache de pedidos pendentes (recente) - ${_pendingRequests.length} pedidos');
+        debugPrint(
+            '⚡ Cache de pedidos pendentes (recente) - ${_pendingRequests.length} pedidos');
         return _pendingRequests;
       }
     }
 
     try {
-      debugPrint('📡 Buscando pedidos pendentes da API (forceRefresh=$forceRefresh)');
+      debugPrint(
+          '📡 Buscando pedidos pendentes da API (forceRefresh=$forceRefresh)');
       final response = await _apiService.getAuth(
         '/requests/provider/pending',
         forceRefresh: forceRefresh,
@@ -619,14 +692,14 @@ class AppProvider extends ChangeNotifier {
     try {
       await _apiService.patchAuth('/requests/$requestId/accept', {});
 
-      // ✅ Remover da lista local IMEDIATAMENTE
+      // Remover da lista local IMEDIATAMENTE
       _pendingRequests.removeWhere((r) => r.id == requestId);
       _providerStats['pendingRequests'] = _pendingRequests.length;
 
-      // ✅ Forçar refresh TOTAL (ignorar todos os caches)
+      // Forçar refresh TOTAL (ignorar todos os caches)
       _lastPendingFetch = DateTime(2000);
       _invalidateCache('provider_pending_${_currentUser?.id}');
-      
+
       notifyListeners();
 
       // Buscar dados atualizados em background
@@ -644,20 +717,20 @@ class AppProvider extends ChangeNotifier {
     debugPrint('📡 Recusando pedido: $requestId');
     try {
       await _apiService.patchAuth('/requests/$requestId/reject', {});
-      
-      // ✅ Remover da lista local IMEDIATAMENTE
+
+      // Remover da lista local IMEDIATAMENTE
       _pendingRequests.removeWhere((r) => r.id == requestId);
       _providerStats['pendingRequests'] = _pendingRequests.length;
-      
-      // ✅ Forçar refresh TOTAL
+
+      // Forçar refresh TOTAL
       _lastPendingFetch = DateTime(2000);
       _invalidateCache('provider_pending_${_currentUser?.id}');
-      
+
       notifyListeners();
-      
+
       unawaited(getProviderPendingRequests(forceRefresh: true));
       unawaited(loadProviderStats());
-      
+
       debugPrint('❌ Pedido $requestId recusado');
     } catch (e) {
       debugPrint('❌ Erro ao recusar pedido: $e');
@@ -696,13 +769,9 @@ class AppProvider extends ChangeNotifier {
   }
 
   Future<void> updateProviderStatus(bool isOnline) async {
-    try {
-      await _apiService
-          .patchAuth('/providers/availability', {'is_available': isOnline});
-      RealtimeWsService().setOnlineStatus(isOnline);
-    } catch (e) {
-      debugPrint('❌ Erro ao atualizar status: $e');
-    }
+    await _apiService
+        .patchAuth('/providers/availability', {'is_available': isOnline});
+    RealtimeWsService().setOnlineStatus(isOnline);
   }
 
   // Solicitações do Cliente
@@ -741,11 +810,14 @@ class AppProvider extends ChangeNotifier {
     required String serviceId,
     required String clientId,
     required String clientName,
-    required List<String> providerIds,
     required LocationModel location,
+    List<String> providerIds = const [],
+    String requestMode = 'manual', // 'broadcast' | 'category' | 'manual'
+    String? categoryId,
+    int requestedProviderCount = 1,
     double? budget,
     DateTime? scheduledDate,
-    String? observations,
+    bool isScheduled = false,
   }) async {
     try {
       final response = await _apiService.postAuth('/requests', {
@@ -753,13 +825,16 @@ class AppProvider extends ChangeNotifier {
         'client_id': clientId,
         'client_name': clientName,
         'selected_providers': providerIds,
+        'request_mode': requestMode,
+        'category_id': categoryId,
+        'requested_provider_count': requestedProviderCount,
         'location': location.toJson(),
         'budget': budget,
         'scheduled_date': scheduledDate?.toIso8601String(),
-        'observations': observations,
+        'is_scheduled': isScheduled,
       });
       final requestId = response['id']?.toString() ?? '';
-      _unreadNotifications += providerIds.length;
+      _unreadNotifications += providerIds.isNotEmpty ? providerIds.length : 1;
       notifyListeners();
       return requestId;
     } catch (e) {
@@ -781,7 +856,6 @@ class AppProvider extends ChangeNotifier {
     if (cached != null) return cached;
 
     try {
-      // CORRIGIDO: Remover /api extra da URL
       final url =
           '${ApiConfig.baseUrl}/route?fromLat=${from.latitude}&fromLng=${from.longitude}&toLat=${to.latitude}&toLng=${to.longitude}';
       debugPrint('📍 Calculando rota: $url');
@@ -936,6 +1010,8 @@ class AppProvider extends ChangeNotifier {
     _pollingTimer?.cancel();
     super.dispose();
   }
+
+  Future<void> cancelRequest(String s) async {}
 }
 
 class _CachedData<T> {

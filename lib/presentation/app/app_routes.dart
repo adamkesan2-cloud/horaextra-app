@@ -246,8 +246,7 @@ class AppRoutes {
               service: args['service'] as ServiceModel,
               scheduledDate: args['scheduledDate'] as DateTime?,
               observations: args['observations'] as String?,
-              isUrgent: args['isUrgent'] as bool? ?? false,
-              quantity: args['quantity'] as int? ?? 1, // ✅ Adicionado quantity
+              quantity: args['quantity'] as int? ?? 1,
             ),
             settings: routeSettings,
           );
@@ -263,7 +262,6 @@ class AppRoutes {
       case requestTracking:
         final args = routeSettings.arguments;
         if (args is Map<String, dynamic>) {
-          // Converter a lista corretamente
           List<ProviderSelectionModel> providers = [];
           if (args['selectedProviders'] != null) {
             final list = args['selectedProviders'] as List;
@@ -280,17 +278,17 @@ class AppRoutes {
             builder: (_) => RequestTrackingScreen(
               serviceName: args['serviceName'] as String? ?? 'Serviço',
               selectedProviders: providers,
-              isUrgent: args['isUrgent'] as bool? ?? false,
               scheduledDate: args['scheduledDate'] as DateTime?,
               requestId: args['requestId'] as String?,
+              quantity: args['quantity'] as int? ?? 1,
             ),
             settings: routeSettings,
           );
         }
         return MaterialPageRoute(
-          builder: (_) => const RequestTrackingScreen(
+          builder: (_) => RequestTrackingScreen(
             serviceName: 'Serviço',
-            selectedProviders: [],
+            selectedProviders: const [],
           ),
           settings: routeSettings,
         );
